@@ -1,0 +1,294 @@
+import React, { useEffect, useState } from 'react';
+
+// 实验室器材管理单文件 React 组件（可直接在 CRA / Vite / Next.js 的页面内使用）
+// 说明：
+// - 使用 Tailwind CSS 进行样式（页面假定已配置 Tailwind）。
+// - 数据保存在 localStorage（可替换为后端 API）。
+// - 功能：添加/编辑/删除条目、搜索/筛选、导出 CSV、导入 CSV、表格排序、重复采购提示、合计价格。
+// - 字段：采购时间, 元件名称, 型号, 主要参数, 厂家, 单价, 数量, 总价, 办理人, 存放地点, 备注
+
+export default function LabInventoryApp() {
+  const STORAGE_KEY = 'lab-inventory-v1';
+
+  const empty = {
+    id: null,
+    date: '',
+    name: '',
+    model: '',
+    specs: '',
+    vendor: '',
+    unitPrice: '',
+    qty: '1',
+    total: '',
+    owner: '',
+    location: '',
+    note: '',
+  };
+
+  const [form, setForm] = useState(empty);
+  const [items, setItems] = useState([]);
+  const [query, setQuery] = useState('');
+  const [editingId, setEditingId] = useState(null);
+  const [sortKey, setSortKey] = useState('date');
+  const [sortDir, setSortDir] = useState('desc');
+  const [warning, setWarning] = useState('');
+
+  useEffect(() => {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) setItems(JSON.parse(raw));
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+  }, [items]);
+
+  function handleChange(e) {
+    const { name, value } = e.target;
+    const next = { ...form, [name]: value };
+    if (name === 'unitPrice' || name === 'qty') {
+      const p = parseFloat(next.unitPrice || 0) || 0;
+      const q = parseFloat(next.qty || 0) || 0;
+      next.total = (p * q).toFixed(2);
+    }
+    setForm(next);
+  }
+
+  function checkDuplicate(entry) {
+    // 简单判断：同名 + 同型号 + 存放地点相同，提示可能重复购买
+    return items.some(
+      (it) => it.id !== entry.id && it.name.trim() && it.model.trim() &&
+        it.name.trim().toLowerCase() === entry.name.trim().toLowerCase() &&
+        it.model.trim().toLowerCase() === entry.model.trim().toLowerCase() &&
+        it.location.trim().toLowerCase() === entry.location.trim().toLowerCase()
+    );
+  }
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    // 基本校验
+    if (!form.date || !form.name || !form.model || !form.unitPrice || !form.qty) {
+      setWarning('请填写：采购时间、元件名称、型号、单价、数量（为必填）');
+      return;
+    }
+    setWarning('');
+    const entry = { ...form, id: editingId || Date.now() };
+
+    if (checkDuplicate(entry)) {
+      const ok = window.confirm('可能存在重复采购记录。确定仍要保存吗？');
+      if (!ok) return;
+    }
+
+    if (editingId) {
+      setItems(items.map((it) => (it.id === editingId ? entry : it)));
+    } else {
+      setItems([entry, ...items]);
+    }
+    setForm(empty);
+    setEditingId(null);
+  }
+
+  function handleEdit(id) {
+    const it = items.find((x) => x.id === id);
+    if (!it) return;
+    setForm(it);
+    setEditingId(id);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function handleDelete(id) {
+    if (!window.confirm('确认删除该记录吗？')) return;
+    setItems(items.filter((it) => it.id !== id));
+  }
+
+  function clearAll() {
+    if (!window.confirm('确认清空所有记录？此操作不可撤销。')) return;
+    setItems([]);
+  }
+
+  function exportCSV() {
+    if (!items.length) return alert('无数据可导出');
+    const headers = ['采购时间','元件名称','型号','主要参数','厂家','单价/元','数量','总价/元','办理人','存放地点','备注'];
+    const rows = items.map(it => [it.date,it.name,it.model,it.specs,it.vendor,it.unitPrice,it.qty,it.total,it.owner,it.location,it.note]);
+    const csv = [headers.join(','), ...rows.map(r=>r.map(c=>`"${(c||'').toString().replace(/"/g,'""')}"`).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `lab_inventory_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function importCSV(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = reader.result;
+      const lines = text.split(/\r?\n/).filter(Boolean);
+      if (!lines.length) return alert('文件为空');
+      const dataLines = lines.slice(1);
+      const parsed = dataLines.map(line => {
+        const cols = line.split(',').map(c => c.replace(/^\"|\"$/g, '').trim());
+        return {
+          id: Date.now() + Math.random(),
+          date: cols[0] || '',
+          name: cols[1] || '',
+          model: cols[2] || '',
+          specs: cols[3] || '',
+          vendor: cols[4] || '',
+          unitPrice: cols[5] || '',
+          qty: cols[6] || '1',
+          total: cols[7] || '',
+          owner: cols[8] || '',
+          location: cols[9] || '',
+          note: cols[10] || '',
+        };
+      }).filter(r => r.name);
+      if (!parsed.length) return alert('未发现有效记录');
+      setItems(prev => [...parsed, ...prev]);
+      alert(`导入 ${parsed.length} 条记录（简单 CSV 解析）`);
+    };
+    reader.readAsText(file);
+  }
+
+  function sortedFiltered() {
+    const q = query.trim().toLowerCase();
+    let list = items.filter(it => {
+      if (!q) return true;
+      return [it.date,it.name,it.model,it.specs,it.vendor,it.owner,it.location,it.note].some(f => (f||'').toString().toLowerCase().includes(q));
+    });
+    list = list.sort((a,b)=>{
+      const A = (a[sortKey]||'').toString();
+      const B = (b[sortKey]||'').toString();
+      if (sortKey === 'unitPrice' || sortKey === 'qty' || sortKey === 'total') {
+        return sortDir === 'asc' ? (parseFloat(A||0)-parseFloat(B||0)) : (parseFloat(B||0)-parseFloat(A||0));
+      }
+      return sortDir === 'asc' ? A.localeCompare(B) : B.localeCompare(A);
+    });
+    return list;
+  }
+
+  function toggleSort(key) {
+    if (sortKey === key) setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
+    else { setSortKey(key); setSortDir('asc'); }
+  }
+
+  const totalSum = items.reduce((s,it)=> s + (parseFloat(it.total)||0), 0).toFixed(2);
+
+  return (
+    <div className="p-6 max-w-7xl mx-auto">
+      <h1 className="text-2xl font-semibold mb-4">实验室器材管理</h1>
+
+      <form onSubmit={handleSubmit} className="bg-white shadow rounded p-4 mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="space-y-2">
+          <label className="block text-sm">采购时间（YYYY-MM-DD）</label>
+          <input name="date" value={form.date} onChange={handleChange} className="w-full border rounded p-2" placeholder="2025-08-27" />
+
+          <label className="block text-sm mt-2">元件名称 *</label>
+          <input name="name" value={form.name} onChange={handleChange} className="w-full border rounded p-2" />
+
+          <label className="block text-sm mt-2">型号 *</label>
+          <input name="model" value={form.model} onChange={handleChange} className="w-full border rounded p-2" />
+
+          <label className="block text-sm mt-2">主要参数</label>
+          <input name="specs" value={form.specs} onChange={handleChange} className="w-full border rounded p-2" />
+        </div>
+
+        <div className="space-y-2">
+          <label className="block text-sm">厂家</label>
+          <input name="vendor" value={form.vendor} onChange={handleChange} className="w-full border rounded p-2" />
+
+          <label className="block text-sm mt-2">单价/元 *</label>
+          <input name="unitPrice" value={form.unitPrice} onChange={handleChange} type="number" step="0.01" className="w-full border rounded p-2" />
+
+          <label className="block text-sm mt-2">数量 *</label>
+          <input name="qty" value={form.qty} onChange={handleChange} type="number" className="w-full border rounded p-2" />
+
+          <label className="block text-sm mt-2">总价/元</label>
+          <input name="total" value={form.total} onChange={handleChange} readOnly className="w-full border rounded p-2 bg-gray-50" />
+        </div>
+
+        <div className="space-y-2">
+          <label className="block text-sm">办理人</label>
+          <input name="owner" value={form.owner} onChange={handleChange} className="w-full border rounded p-2" />
+
+          <label className="block text-sm mt-2">存放地点</label>
+          <input name="location" value={form.location} onChange={handleChange} className="w-full border rounded p-2" />
+
+          <label className="block text-sm mt-2">备注</label>
+          <input name="note" value={form.note} onChange={handleChange} className="w-full border rounded p-2" />
+
+          <div className="flex gap-2 mt-2">
+            <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded">{editingId? '保存修改' : '添加记录'}</button>
+            <button type="button" onClick={() => { setForm(empty); setEditingId(null); setWarning(''); }} className="px-4 py-2 border rounded">重置</button>
+            <button type="button" onClick={() => { setForm({...empty, date: new Date().toISOString().slice(0,10)}) }} className="px-4 py-2 border rounded">今天</button>
+          </div>
+          {warning && <p className="text-red-600 text-sm mt-1">{warning}</p>}
+        </div>
+      </form>
+
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex gap-2">
+          <input placeholder="搜索：名称/型号/厂家/地点" value={query} onChange={e=>setQuery(e.target.value)} className="border rounded p-2" />
+          <button onClick={()=>{ setQuery('') }} className="px-3 py-2 border rounded">清空</button>
+        </div>
+        <div className="flex gap-2">
+          <label className="flex items-center gap-2">
+            导入 CSV <input type="file" accept=".csv" onChange={(e)=> e.target.files[0] && importCSV(e.target.files[0])} className="ml-2" />
+          </label>
+          <button onClick={exportCSV} className="px-3 py-2 bg-green-600 text-white rounded">导出 CSV</button>
+          <button onClick={clearAll} className="px-3 py-2 border rounded">清空所有</button>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto bg-white rounded shadow">
+        <table className="min-w-full table-auto">
+          <thead>
+            <tr className="bg-gray-50">
+              <th className="p-2 text-left cursor-pointer" onClick={()=>toggleSort('date')}>采购时间</th>
+              <th className="p-2 text-left cursor-pointer" onClick={()=>toggleSort('name')}>元件名称</th>
+              <th className="p-2 text-left">型号</th>
+              <th className="p-2 text-left">主要参数</th>
+              <th className="p-2 text-left">厂家</th>
+              <th className="p-2 text-right" onClick={()=>toggleSort('unitPrice')}>单价</th>
+              <th className="p-2 text-right" onClick={()=>toggleSort('qty')}>数量</th>
+              <th className="p-2 text-right" onClick={()=>toggleSort('total')}>总价</th>
+              <th className="p-2 text-left">办理人</th>
+              <th className="p-2 text-left">存放地点</th>
+              <th className="p-2 text-left">备注</th>
+              <th className="p-2">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sortedFiltered().map(it => (
+              <tr key={it.id} className="border-t">
+                <td className="p-2">{it.date}</td>
+                <td className="p-2">{it.name}</td>
+                <td className="p-2">{it.model}</td>
+                <td className="p-2">{it.specs}</td>
+                <td className="p-2">{it.vendor}</td>
+                <td className="p-2 text-right">{it.unitPrice}</td>
+                <td className="p-2 text-right">{it.qty}</td>
+                <td className="p-2 text-right">{it.total}</td>
+                <td className="p-2">{it.owner}</td>
+                <td className="p-2">{it.location}</td>
+                <td className="p-2">{it.note}</td>
+                <td className="p-2">
+                  <div className="flex gap-2">
+                    <button onClick={()=>handleEdit(it.id)} className="px-2 py-1 border rounded">编辑</button>
+                    <button onClick={()=>handleDelete(it.id)} className="px-2 py-1 border rounded">删除</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-3 flex justify-between items-center">
+        <div>记录总数：{items.length} &nbsp;|&nbsp; 合计库存价值（总价求和）：{totalSum} 元</div>
+        <div className="text-sm text-gray-600">提示：同名+型号+地点相同的记录将被提示可能重复采购</div>
+      </div>
+
+      <div className="mt-6 text-sm text-gray-500">注：这是一个前端演示版。若需多用户并发、权限控制、长期存储与备份，请将数据提交至后端（例如 Node/Express + 数据库），并增加用户认证（如校园账号或 GitHub/Google OAuth）。</div>
+    </div>
+  );
+}
